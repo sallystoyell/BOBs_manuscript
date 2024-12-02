@@ -1,0 +1,147 @@
+---
+title: "Segmentation_Intensities"
+output: html_document
+date: "2023-09-19"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(tidyverse)
+library(ggpubr)
+library(effsize)
+
+#Read in subjects per month
+all_files_list <- list()
+for (month in c("1mo", "2mo", "3mo", "4mo", "5mo", "6mo", "7mo", "8mo")) {
+  filenames <- list.files(paste0("~/path/to/data/Intensity_Distributions/intensity_", month), pattern="*.txt", full.names=TRUE)
+  files <- lapply(filenames, function(file) {
+    file_info <- strsplit(gsub(".txt", "", basename(file)), "_")[[1]]
+    data <- data.frame(
+        T_type = file_info[2],   # T1 or T2
+        Subject = file_info[3], 
+        tissue = file_info[1],  # gray or white
+        Age = file_info[4],
+        read.table(file)  
+      )
+  names(data) <- c("image", "Subject", "tissue", "Age", "intensity")
+  return(data)
+})
+  all_files_list[[month]] <- files
+}
+
+month_1 = bind_rows(all_files_list[1])
+month_2 = bind_rows(all_files_list[2])
+month_3 = bind_rows(all_files_list[3])
+month_4 = bind_rows(all_files_list[4])
+month_5 = bind_rows(all_files_list[5])
+month_6 = bind_rows(all_files_list[6])
+month_7 = bind_rows(all_files_list[7])
+month_8 = bind_rows(all_files_list[8])
+All_months = list(month_1, month_2, month_3, month_4, month_5, month_6, month_7, month_8) 
+names(All_months) <- c("1mo", "2mo", "3mo", "4mo", "5mo", "6mo", "7mo", "8mo") 
+
+#Normalize values within a subject
+All_months_z = lapply(All_months, function(df){
+    df %>%
+      group_by(image, Subject, tissue, Age) %>%
+      #mutate(zscore_intensity = (intensity - mean(intensity))/sd(intensity)) %>%
+      summarise(mean=mean(intensity), sd=sd(intensity), n=n())
+})
+Intensities_long <- bind_rows(All_months_z)
+Intensities = Intensities_long %>%
+  pivot_wider(names_from = tissue, values_from = c(mean, sd, n)) %>%
+  mutate(cohen_graywhite = (mean_whitehist - mean_grayhist)/(sqrt(((sd_whitehist^2) + (sd_grayhist^2))/2)))
+```
+
+```{r}
+#By tissue/image type
+Intensities %>%
+ggplot(., aes(Age, cohen_graywhite)) + 
+  geom_hline(yintercept = 0, linetype = "dashed") + 
+  geom_boxplot(aes(fill=image)) +
+  scale_fill_manual(values=c("#CCEBC5", "lightblue")) + 
+  ylim(-2.1, 2.1) + 
+  labs(y="Gray/White Matter - Cohen's D", fill="Image") + 
+  theme_classic(base_size=20)
+
+```
+
+```{r}
+#By age
+young <- ggplot(White_1mo, aes(intensity, color='White Matter')) + 
+  geom_histogram(data=Gray_1mo, aes(x=intensity, color='Gray Matter'), fill="white") + 
+  geom_histogram(fill="white")+
+  ggtitle("1mo") + 
+  scale_color_manual(name="", breaks=c("White Matter", "Gray Matter"), values=c('White Matter'="blue", 'Gray Matter'="green")) + 
+  theme_bw()
+
+old <- ggplot(White_8mo, aes(intensity, color='White Matter')) + 
+  geom_histogram(data=Gray_8mo, aes(x=intensity, color='Gray Matter'), fill="white") + 
+  geom_histogram(fill="white")+
+  ggtitle("8mo") + 
+  scale_color_manual(name="", breaks=c("White Matter", "Gray Matter"), values=c('White Matter'="blue", 'Gray Matter'="green")) + 
+  theme_bw() + 
+  theme(axis.title.y=element)
+
+ggarrange(young, old, common.legend=T, legend="right")
+ggarrange(young, old, ncol=1, common.legend=T, legend="bottom")
+
+ggarrange(young + xlim(50, 250), old + xlim(50, 250), ncol=1, common.legend=T, legend="bottom")
+```
+
+```{r}
+#By age for z-scored values
+
+#T1
+young <- ggplot(month_1, aes(zscore_intensity, color=tissue)) + 
+  geom_histogram(fill="white")+
+  ggtitle("1mo T1") + 
+  scale_color_manual(breaks=c("white", "gray"), values=c("blue", "green")) + 
+  theme_bw()
+
+old <- ggplot(month_8, aes(zscore_intensity, color=tissue)) + 
+  geom_histogram(fill="white")+
+  ggtitle("8mo T1") + 
+  scale_color_manual(breaks=c("white", "gray"), values=c("blue", "green")) + 
+  theme_bw()
+
+#ggarrange(young, old, common.legend=T, legend="right")
+#ggarrange(young, old, ncol=1, common.legend=T, legend="bottom")
+
+ggarrange(young + xlim(-5, 5), old + xlim(-5, 5), ncol=1, common.legend=T, legend="bottom")
+cohen.d(month_1$zscore_intensity[month_1$tissue=="white"], month_1$zscore_intensity[month_1$tissue=="gray"])
+cohen.d(month_8$zscore_intensity[month_8$tissue=="white"], month_8$zscore_intensity[month_8$tissue=="gray"])
+
+#T2
+young_t2 <- ggplot(month_1_t2, aes(zscore_intensity, color=tissue)) + 
+  geom_histogram(fill="white")+
+  ggtitle("1mo T2") + 
+  scale_color_manual(breaks=c("white", "gray"), values=c("blue", "green")) + 
+  theme_bw()
+
+old_t2 <- ggplot(month_8_t2, aes(zscore_intensity, color=tissue)) + 
+  geom_histogram(fill="white")+
+  ggtitle("8mo T2") + 
+  scale_color_manual(breaks=c("white", "gray"), values=c("blue", "green")) + 
+  theme_bw()
+
+#ggarrange(young_t2, old_t2, common.legend=T, legend="right")
+#ggarrange(young_t2, old_t2, ncol=1, common.legend=T, legend="bottom")
+
+ggarrange(young_t2 + xlim(-5, 5), old_t2 + xlim(-5, 5), ncol=1, common.legend=T, legend="bottom")
+cohen.d(month_1_t2$zscore_intensity[month_1_t2$tissue=="white"], month_1_t2$zscore_intensity[month_1_t2$tissue=="gray"])
+cohen.d(month_8_t2$zscore_intensity[month_8_t2$tissue=="white"], month_8_t2$zscore_intensity[month_8_t2$tissue=="gray"])
+```
+
+```{r}
+#Separate
+ggplot(Gray_8mo, aes(intensity)) + 
+  geom_histogram(fill="gray", color = "darkred")+
+  geom_histogram(data=White_8mo, aes(intensity), fill="white", color = "darkred")+
+  geom_histogram(data=Gray_1mo, aes(intensity), fill="gray", color = "pink")+
+  geom_histogram(data=White_1mo, aes(intensity), fill="white", color = "pink")+
+  ggtitle("All") + 
+  theme_bw()
+```
+

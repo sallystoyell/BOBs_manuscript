@@ -1,0 +1,370 @@
+---
+title: "Segmentations_Demographics"
+output: html_document
+date: "2023-02-06"
+---
+
+```{r}
+library(readxl)
+library(tidyverse)
+library(ggsci)
+library(ggpubr)
+library(data.table)
+Segmentation_IDs <- read_excel("~/path/to/repository/IDs/Segmentation_IDs.xlsx")
+
+#Full BCP information to compare
+#Demographics, Mullen, IBQ, vineland
+
+#Read in demographics by candidate
+BCP_demographics_eligibility_raw <- read.csv("~/path/to/BCP/data/BCP_demographics_eligibility.csv")
+BCP_demographics_eligibility = BCP_demographics_eligibility_raw %>%
+  mutate(ID = sub(",.*", "", Identifiers)) %>%
+  rename(Eligibility_visit = Identifiers) %>%
+  filter(demographics_eligibility.Administration=="All") %>%
+  distinct(ID, .keep_all = T)
+
+#Read in demographics by visit and merge each visit with candidate info
+BCP_demographics_visit <- read.csv("~/path/to/BCP/data/BCP_demographics.csv")  
+BCP_demographics_visit = BCP_demographics_visit %>%
+  mutate(Visit_Age = gsub(".*x", "", demographics.Visit_label)) %>%
+  mutate(Visit_Age = ifelse(grepl("wk", Visit_Age)==T, ".", Visit_Age)) %>%
+  mutate(Visit_Age = gsub("m", "", Visit_Age))
+BCP_demographics = merge(BCP_demographics_visit, BCP_demographics_eligibility, by.x="demographics.PSCID", by.y="ID", all.x = T)
+
+#Add in segmentation IDs
+Segmentation_IDs = Segmentation_IDs %>%
+  mutate(BOBs = "BOB") #Label those in the repository
+BCP_demographics_SegID <- merge(Segmentation_IDs, BCP_demographics, by.x = c("SUBID", "Age"), by.y = c("demographics.CandID", "Visit_Age"), all=T)
+
+#Remove irrelevant visits (ex. parent visits)
+BCP_demographics_SegID = BCP_demographics_SegID %>%
+  mutate(Age = ifelse(Age==".", 0.5, Age)) %>%
+  filter(as.numeric(Age) > 0)
+
+#Read in Mullen/IBQ/Vineland, select relevant variables, and merge
+BCP_Behavior_raw <- read.csv("~/path/to/BCP/data/BCP_Mullen_IBQ_Vineland_3-13-24.csv", na.strings = c("", "."))
+BCP_Behavior = BCP_Behavior_raw %>%
+  select(Identifiers, vineland_subject.ABC_STD_SCORE, vineland_subject.Validity, mullen.Validity, mullen.composite_standard_score, ibq_r.activity_level, ibq_r.distress_to_limitations, ibq_r.fear, ibq_r.duration_of_orienting, ibq_r.smiling_and_laughter, ibq_r.high_pleasure, ibq_r.low_pleasure, ibq_r.soothability, ibq_r.falling_reactivity, ibq_r.cuddliness, ibq_r.perceptual_sensitivity, ibq_r.sadness, ibq_r.approach, ibq_r.vocal_reactivity)
+BCP_Behavior_Demo <- merge(BCP_Behavior, BCP_demographics_SegID, by="Identifiers", all=T)
+
+#Filter to only those with imaging data
+BCP_Imaging <- read_csv("~/path/to/BCP/data/BCP_Imaging_3-19-24.csv")
+BCP_Imaging = BCP_Imaging %>%
+  filter((`mn_mri_metadata,t1_success`=="successful" | `mn_mri_metadata_secondattempt,t1_success`=="successful") & (`mn_mri_metadata,t2_success`=="successful" | `mn_mri_metadata_secondattempt,t2_success`=="successful")) %>%
+  select(Identifiers, `mn_mri_metadata,Candidate_Age`, `mn_mri_metadata_secondattempt,Candidate_Age`, `mn_mri_metadata,t1_success`, `mn_mri_metadata,t2_success`, `mn_mri_metadata_secondattempt,t1_success`, `mn_mri_metadata_secondattempt,t2_success`)
+#Get age for correct scan attempt
+BCP_Imaging = BCP_Imaging %>%
+  mutate(Candidate_Age=if_else(`mn_mri_metadata,t1_success`=="successful" & `mn_mri_metadata,t2_success`=="successful", `mn_mri_metadata,Candidate_Age`, `mn_mri_metadata_secondattempt,Candidate_Age`)) %>%
+  mutate(Candidate_Age=if_else(is.na(Candidate_Age), `mn_mri_metadata_secondattempt,Candidate_Age`, `mn_mri_metadata,Candidate_Age`))
+
+BCP_Behavior_Demo_imaging <- merge(BCP_Behavior_Demo, BCP_Imaging, by = "Identifiers", all.y=T)
+
+#Make blank and not_answered NA
+BCP_Behavior_Demo_imaging$demographics_eligibility.parent1_education[BCP_Behavior_Demo_imaging$demographics_eligibility.parent1_education=="not_answered" | BCP_Behavior_Demo_imaging$demographics_eligibility.parent1_education==""] <- NA
+BCP_Behavior_Demo_imaging$demographics_eligibility.household_income[BCP_Behavior_Demo_imaging$demographics_eligibility.household_income=="not_answered"] <- NA
+BCP_Behavior_Demo_imaging$demographics_eligibility.subject_ethnicity[BCP_Behavior_Demo_imaging$demographics_eligibility.subject_ethnicity=="not_answered"] <- NA
+
+#Set BOBs to no for non-repository
+BCP_Behavior_Demo_imaging = BCP_Behavior_Demo_imaging %>%
+  mutate(BOBs=if_else(is.na(BOBs), "No", BOBs))
+
+#Remove all files except relevant
+rm(list=setdiff(ls(), c("BCP_Behavior_Demo_imaging")))
+```
+
+```{r}
+#Get demographics for full cohort
+donut_plot_full = function(variable) {
+  data = BCP_Behavior_Demo_imaging %>%
+  distinct(SUBID, .keep_all=T) %>%
+  count({{variable}}) %>%
+  rename(category=1)
+    
+data$fraction <- data$n / sum(data$n)
+
+# Compute the cumulative percentages (top of each rectangle)
+data$ymax <- cumsum(data$fraction)
+
+# Compute the bottom of each rectangle
+data$ymin <- c(0, head(data$ymax, n=-1))
+
+# Compute label position
+data$labelPosition <- (data$ymax + data$ymin) / 2
+
+# Compute a good label
+data$label <- paste0(data$category, "\n", round(data$fraction, 2)*100, "%")
+
+# Make the plot
+plot = ggplot(data, aes(ymax=ymax, ymin=ymin, xmax=4, xmin=3, fill=category)) +
+  geom_rect() +
+  geom_label(x=3.5, aes(y=labelPosition, label=label), size=3) +
+  scale_fill_brewer(palette=4) +
+  coord_polar(theta="y") +
+  xlim(c(2, 4)) +
+  theme_void() +
+  theme(legend.position = "none")
+return(plot)
+}
+
+eth_donut_full = donut_plot_full(demographics_eligibility.subject_ethnicity)
+sex_donut_full = donut_plot_full(demographics.Sex)
+p1_donut_full = donut_plot_full(demographics_eligibility.parent1_education)
+p2_donut_full = donut_plot_full(demographics_eligibility.parent2_education)
+inc_donut_full = donut_plot_full(demographics_eligibility.household_income)
+race_donut_full = donut_plot_full(demographics_eligibility.subject_race)
+
+Age_continuous_full = ggplot(BCP_Behavior_Demo_imaging, aes(Candidate_Age, reorder(SUBID, Candidate_Age, min), group=SUBID))+
+  geom_line(color="gray") + 
+  geom_point(color = "lightblue", size=2.5) + 
+  xlab("Age (months)") + 
+  ylab("Participants") +
+  ggtitle("901 Scans across 383 Participants") +
+  #scale_x_continuous(breaks = seq(0, 10, 1)) +
+  theme_bw() + 
+  theme(text = element_text(size=10), title = element_text(size=10, face="bold"), axis.text.y=element_blank(), axis.ticks.y=element_blank(), panel.grid = element_blank())
+
+Age_bins_full = BCP_Behavior_Demo_imaging %>%
+  mutate(Candidate_Age_cat = gsub("\\..*", "", as.character(Candidate_Age))) %>%
+ggplot(., aes(as.numeric(Candidate_Age_cat))) +
+  geom_histogram(binwidth = 1, color="lightblue", fill="white", size=1) + 
+  #scale_x_continuous(breaks = 1:10) + 
+  #scale_y_continuous(breaks = seq(0,12,2)) +  
+  xlab("Age (months)") +
+  ylab("count") + 
+  theme_bw() +
+  theme(text = element_text(size=15), title = element_text(size=10, face="bold"), panel.grid.minor.x = element_blank(), panel.grid = element_blank())
+
+#Sex, Race, Ethnicity donuts
+Sex_Race_full = ggarrange(NULL, NULL, NULL, sex_donut_full, race_donut_full, eth_donut_full,
+          labels=c("", "", "", "Sex", "Race", "Ethnicity"),
+          ncol=3, nrow=2, font.label = list(size = 10, face="bold"), label.x=c(0, 0, 0, 0, 0, -0.1), label.y=c(1, 1, 1, 1, 1, 1), heights=c(0.1, 1))
+
+#Education/Income
+p1_plot = BCP_Behavior_Demo_imaging %>%
+  distinct(SUBID, .keep_all=T) %>%
+  mutate(parent1_education = fct_relevel(demographics_eligibility.parent1_education, "some_high", "high", "some_college", "college", "some_grad", "grad"),
+         parent1_education = factor(parent1_education, labels=c("Some\nhigh", "High", "Some\ncollege", "College", "Some\ngrad", "Grad"))) %>%
+  ggplot(., aes(parent1_education)) + 
+  geom_histogram(stat="count", color="#CCEBC5", fill="white", size=1) +
+  #ylim(0, 40) + 
+  xlab("Maternal Education") +
+  theme_bw() + 
+  theme(text = element_text(size=10), title = element_text(size=10, face="bold"), axis.text.x = element_text(angle=0, vjust=0.5), panel.grid = element_blank())
+income_plot = BCP_Behavior_Demo_imaging %>%
+  distinct(SUBID, .keep_all=T) %>%
+  mutate(household_income = fct_relevel(demographics_eligibility.household_income, "less_than_25k", "25_35k", "35_50k", "50_75k", "75_100k", "100_150k", "150_200k", "over_200k"),
+         household_income = factor(household_income, labels=c("<25k", "25-35k", "35-50k", "50-75k", "75-100k", "100-150k", "150-200k", ">200k"))) %>%
+  ggplot(., aes(household_income)) + 
+  geom_histogram(stat="count", color="#CCEBC5", fill="white", size=1) +
+  xlab("Household Income") +
+  theme_bw() +
+  theme(text = element_text(size=10), title = element_text(size=10, face="bold"), axis.text.x = element_text(angle=80, vjust=0.5), panel.grid = element_blank())
+Ed_Income_full = ggarrange(NULL, p1_plot, income_plot, ncol=1, heights = c(0.1, 1, 1))
+Age_bin_full_NULL = ggarrange(NULL, Age_bins_full, ncol=1, heights=c(0.1, 1))
+
+Left_full = ggarrange(ggarrange(Age_continuous_full, Age_bin_full_NULL, ncol=2), Sex_Race_full, ncol=1, heights = c(1.1, 1))
+ggarrange(Left_full, NULL, Ed_Income_full, ncol=3, widths=c(3, 0.1, 1.75))
+```
+
+```{r}
+#Get demographics for only BOBs
+donut_plot_BOB = function(variable) {
+  data = BCP_Behavior_Demo_imaging %>%
+    filter(BOBs=="BOB") %>%
+  distinct(SUBID, .keep_all=T) %>%
+  count({{variable}}) %>%
+  rename(category=1)
+    
+data$fraction <- data$n / sum(data$n)
+
+# Compute the cumulative percentages (top of each rectangle)
+data$ymax <- cumsum(data$fraction)
+
+# Compute the bottom of each rectangle
+data$ymin <- c(0, head(data$ymax, n=-1))
+
+# Compute label position
+data$labelPosition <- (data$ymax + data$ymin) / 2
+
+# Compute a good label
+data$label <- paste0(data$category, "\n", round(data$fraction, 2)*100, "%")
+
+# Make the plot
+plot = ggplot(data, aes(ymax=ymax, ymin=ymin, xmax=4, xmin=3, fill=category)) +
+  geom_rect() +
+  geom_label(x=3.5, aes(y=labelPosition, label=label), size=3) +
+  scale_fill_brewer(palette=4) +
+  coord_polar(theta="y") +
+  xlim(c(2, 4)) +
+  theme_void() +
+  theme(legend.position = "none")
+return(plot)
+}
+
+eth_donut_BOB = donut_plot_BOB(demographics_eligibility.subject_ethnicity)
+sex_donut_BOB = donut_plot_BOB(demographics.Sex)
+p1_donut_BOB = donut_plot_BOB(demographics_eligibility.parent1_education)
+p2_donut_BOB = donut_plot_BOB(demographics_eligibility.parent2_education)
+inc_donut_BOB = donut_plot_BOB(demographics_eligibility.household_income)
+race_donut_BOB = donut_plot_BOB(demographics_eligibility.subject_race)
+
+Age_continuous_BOB = BCP_Behavior_Demo_imaging %>%
+  filter(BOBs=="BOB") %>%
+  ggplot(., aes(Candidate_Age, reorder(SUBID, Candidate_Age, min), group=SUBID))+
+  geom_line(color="gray") + 
+  geom_point(color = "lightblue", size=2.5) + 
+  xlab("Age (months)") + 
+  ylab("Participants") +
+  ggtitle("71 Scans across 51 Participants") +
+  scale_x_continuous(breaks = seq(0, 10, 1)) +
+  theme_bw() + 
+  theme(text = element_text(size=10), title = element_text(size=10, face="bold"), axis.text.y=element_blank(), axis.ticks.y=element_blank(), panel.grid = element_blank())
+
+Age_bins_BOB = BCP_Behavior_Demo_imaging %>%
+  filter(BOBs=="BOB") %>%
+  mutate(Candidate_Age_cat = gsub("\\..*", "", as.character(Candidate_Age))) %>%
+ggplot(., aes(as.numeric(Candidate_Age_cat))) +
+  geom_histogram(binwidth = 1, color="white", fill="lightblue", size=1) + 
+  scale_x_continuous(breaks = 1:10) + 
+  scale_y_continuous(breaks = seq(0,12,2)) +  
+  xlab("Age (months)") +
+  ylab("count") + 
+  theme_bw() +
+  theme(text = element_text(size=15), title = element_text(size=10, face="bold"), panel.grid.minor.x = element_blank(), panel.grid = element_blank())
+
+#Sex, Race, Ethnicity donuts
+Sex_Race_BOB = ggarrange(NULL, NULL, NULL, sex_donut_BOB, race_donut_BOB, eth_donut_BOB,
+          labels=c("", "", "", "Sex", "Race", "Ethnicity"),
+          ncol=3, nrow=2, font.label = list(size = 10, face="bold"), label.x=c(0, 0, 0, 0, 0, -0.1), label.y=c(1, 1, 1, 1, 1, 1), heights=c(0.1, 1))
+
+#Education/Income
+p1_plot_BOB = BCP_Behavior_Demo_imaging %>%
+  filter(BOBs=="BOB") %>%
+  distinct(SUBID, .keep_all=T) %>%
+  mutate(parent1_education = fct_relevel(demographics_eligibility.parent1_education, "some_college", "college", "some_grad", "grad"),
+         parent1_education = factor(parent1_education, labels=c("Some\ncollege", "College", "Some\ngrad", "Grad"))) %>%
+  ggplot(., aes(parent1_education)) + 
+  geom_histogram(stat="count", color="#CCEBC5", fill="#CCEBC5", size=1) +
+  ylim(0, 30) + 
+  xlab("Maternal Education") +
+  theme_bw() + 
+  theme(text = element_text(size=10), title = element_text(size=10, face="bold"), axis.text.x = element_text(angle=0, vjust=0.5), panel.grid = element_blank())
+income_plot_BOB = BCP_Behavior_Demo_imaging %>%
+  filter(BOBs=="BOB") %>%
+  distinct(SUBID, .keep_all=T) %>%
+  mutate(household_income = fct_relevel(demographics_eligibility.household_income, "less_than_25k", "25_35k", "35_50k", "50_75k", "75_100k", "100_150k", "150_200k", "over_200k"),
+         household_income = factor(household_income, labels=c("<25k", "25-35k", "35-50k", "50-75k", "75-100k", "100-150k", "150-200k", ">200k"))) %>%
+  ggplot(., aes(household_income)) + 
+  geom_histogram(stat="count", color="white", fill="#CCEBC5", size=1) +
+  ylim(0, 20) + 
+  xlab("Household Income") +
+  theme_bw() +
+  theme(text = element_text(size=10), title = element_text(size=10, face="bold"), axis.text.x = element_text(angle=80, vjust=0.5), panel.grid = element_blank())
+Ed_Income_BOB = ggarrange(NULL, p1_plot_BOB, income_plot_BOB, ncol=1, heights = c(0.1, 1, 1))
+Age_bin_BOB_NULL = ggarrange(NULL, Age_bins_BOB, ncol=1, heights=c(0.1, 1))
+
+Left_BOB = ggarrange(ggarrange(Age_continuous_BOB, Age_bin_BOB_NULL, ncol=2), Sex_Race_BOB, ncol=1, heights = c(1.1, 1))
+ggarrange(Left_BOB, NULL, Ed_Income_BOB, ncol=3, widths=c(3, 0.1, 1.75))
+```
+
+```{r}
+#Double-check figure
+BCP_Behavior_Demo_imaging%>%
+  count(SUBID) %>% #383 subjects, 901 scans
+  count(n)
+BCP_Behavior_Demo_imaging_subject = BCP_Behavior_Demo_imaging %>%
+  distinct(SUBID, .keep_all = T)
+table(BCP_Behavior_Demo_imaging_subject$demographics.Sex, useNA = "always")
+table(BCP_Behavior_Demo_imaging_subject$demographics_eligibility.subject_ethnicity, useNA = "always")
+table(BCP_Behavior_Demo_imaging_subject$demographics_eligibility.subject_race, useNA = "always")
+table(BCP_Behavior_Demo_imaging_subject$demographics_eligibility.household_income, useNA = "always")
+table(BCP_Behavior_Demo_imaging_subject$demographics_eligibility.parent1_education, useNA = "always")
+
+BCP_Behavior_Demo_imaging%>%
+  filter(BOBs=="BOB") %>%
+  count(SUBID) %>% #51 subjects, 71 scans
+  count(n)
+BCP_Behavior_Demo_imaging_BOBsubject = BCP_Behavior_Demo_imaging %>%
+  filter(BOBs=="BOB") %>%
+  distinct(SUBID, .keep_all = T)
+table(BCP_Behavior_Demo_imaging_BOBsubject$demographics.Sex, useNA = "always")
+table(BCP_Behavior_Demo_imaging_BOBsubject$demographics_eligibility.subject_ethnicity, useNA = "always")
+table(BCP_Behavior_Demo_imaging_BOBsubject$demographics_eligibility.subject_race, useNA = "always")
+table(BCP_Behavior_Demo_imaging_BOBsubject$demographics_eligibility.household_income, useNA = "always")
+table(BCP_Behavior_Demo_imaging_BOBsubject$demographics_eligibility.parent1_education, useNA = "always")
+```
+
+```{r}
+#Do statistical comparison with BOBs
+
+#Demographics: sex, education, income, race, ethnicity
+# Mullen, IBQ, vineland
+
+#By subject (Demographics)
+#Sex
+BCP_sex <- table(BCP_Behavior_Demo_imaging_subject$demographics.Sex)
+BOB_sex <- table(BCP_Behavior_Demo_imaging_BOBsubject$demographics.Sex)
+chisq.test(rbind(BOB_sex, BCP_sex))
+#Ethnicity
+BCP_eth <- table(BCP_Behavior_Demo_imaging_subject$demographics_eligibility.subject_ethnicity)
+BOB_eth <- table(BCP_Behavior_Demo_imaging_BOBsubject$demographics_eligibility.subject_ethnicity)
+chisq.test(rbind(BOB_eth, BCP_eth))
+#Race 
+BCP_race <- table(BCP_Behavior_Demo_imaging_subject$demographics_eligibility.subject_race)
+BOB_race <- table(factor(BCP_Behavior_Demo_imaging_BOBsubject$demographics_eligibility.subject_race, levels=c("asian", "black", "mixed", "white")))
+chisq.test(rbind(BOB_race, BCP_race))
+#Income
+BCP_inc <- table(BCP_Behavior_Demo_imaging_subject$demographics_eligibility.household_income)
+BOB_inc <- table(BCP_Behavior_Demo_imaging_BOBsubject$demographics_eligibility.household_income)
+chisq.test(rbind(BOB_inc, BCP_inc))
+#Education 
+BCP_ed1 <- table(BCP_Behavior_Demo_imaging_subject$demographics_eligibility.parent1_education)
+BOB_ed1 <- table(factor(BCP_Behavior_Demo_imaging_BOBsubject$demographics_eligibility.parent1_education, levels=c("college", "grad", "high", "some_college", "some_grad", "some_high")))
+chisq.test(rbind(BOB_ed1, BCP_ed1))
+
+#By visit (Mullen, IBQ, Vineland) - only for same age?
+#Mullen - no difference
+BCP_Behavior_Demo_imaging %>%
+  filter(BOBs=="BOB") %>%
+  summarise(mean=mean(mullen.composite_standard_score, na.rm = T), sd=sd(mullen.composite_standard_score, na.rm = T))
+BCP_Behavior_Demo_imaging %>%
+  summarise(mean=mean(mullen.composite_standard_score, na.rm = T), sd=sd(mullen.composite_standard_score, na.rm = T))
+t.test(BCP_Behavior_Demo_imaging$mullen.composite_standard_score[BCP_Behavior_Demo_imaging$BOBs=="BOB"], BCP_Behavior_Demo_imaging$mullen.composite_standard_score) #For all visits across ages.
+t.test(BCP_Behavior_Demo_imaging$mullen.composite_standard_score[BCP_Behavior_Demo_imaging$BOBs=="BOB"], BCP_Behavior_Demo_imaging$mullen.composite_standard_score[BCP_Behavior_Demo_imaging$Candidate_Age<9.5]) #Just for visits <9.5mo (i.e. match BOBs)
+
+#Vineland
+BCP_Behavior_Demo_imaging %>%
+  filter(BOBs=="BOB") %>%
+  summarise(mean=mean(vineland_subject.ABC_STD_SCORE, na.rm = T), sd=sd(vineland_subject.ABC_STD_SCORE, na.rm = T))
+BCP_Behavior_Demo_imaging %>%
+  filter(Candidate_Age<9.5) %>%
+  summarise(mean=mean(vineland_subject.ABC_STD_SCORE, na.rm = T), sd=sd(vineland_subject.ABC_STD_SCORE, na.rm = T))
+t.test(BCP_Behavior_Demo_imaging$vineland_subject.ABC_STD_SCORE[BCP_Behavior_Demo_imaging$BOBs=="BOB"], BCP_Behavior_Demo_imaging$vineland_subject.ABC_STD_SCORE[BCP_Behavior_Demo_imaging$Candidate_Age<9.5]) #Just for visits <9.5mo (i.e. match BOBs)
+
+#IBQ_R - chose these three based on Sooyeon's work: "most representative (based on factor loadings) and psychometrically sound subscales of the three higher-order factors". She suggested this: "I would recommend either smiling/laughter and/or vocal reactivity in Positive Emotionality factor, fear and/or distress to limitation from Negative Emotionality factor, and low intensity pleasure and/or duration of orienting in Regulatory Capacity factor."
+BCP_Behavior_Demo_imaging %>%
+  filter(BOBs=="BOB") %>%
+  summarise(mean=mean(ibq_r.smiling_and_laughter, na.rm = T), sd=sd(ibq_r.smiling_and_laughter, na.rm = T))
+BCP_Behavior_Demo_imaging %>%
+  filter(Candidate_Age<9.5) %>%
+  summarise(mean=mean(ibq_r.smiling_and_laughter, na.rm = T), sd=sd(ibq_r.smiling_and_laughter, na.rm = T))
+t.test(BCP_Behavior_Demo_imaging$ibq_r.smiling_and_laughter[BCP_Behavior_Demo_imaging$BOBs=="BOB"], BCP_Behavior_Demo_imaging$ibq_r.smiling_and_laughter[BCP_Behavior_Demo_imaging$Candidate_Age<9.5]) #Just for visits <9.5mo (i.e. match BOBs)
+
+BCP_Behavior_Demo_imaging %>%
+  filter(BOBs=="BOB") %>%
+  summarise(mean=mean(ibq_r.fear, na.rm = T), sd=sd(ibq_r.fear, na.rm = T))
+BCP_Behavior_Demo_imaging %>%
+  filter(Candidate_Age<9.5) %>%
+  summarise(mean=mean(ibq_r.fear, na.rm = T), sd=sd(ibq_r.fear, na.rm = T))
+t.test(BCP_Behavior_Demo_imaging$ibq_r.fear[BCP_Behavior_Demo_imaging$BOBs=="BOB"], BCP_Behavior_Demo_imaging$ibq_r.fear[BCP_Behavior_Demo_imaging$Candidate_Age<9.5]) #Just for visits <9.5mo (i.e. match BOBs)
+
+BCP_Behavior_Demo_imaging %>%
+  filter(BOBs=="BOB") %>%
+  summarise(mean=mean(ibq_r.duration_of_orienting, na.rm = T), sd=sd(ibq_r.duration_of_orienting, na.rm = T))
+BCP_Behavior_Demo_imaging %>%
+  filter(Candidate_Age<9.5) %>%
+  summarise(mean=mean(ibq_r.duration_of_orienting, na.rm = T), sd=sd(ibq_r.duration_of_orienting, na.rm = T))
+t.test(BCP_Behavior_Demo_imaging$ibq_r.duration_of_orienting[BCP_Behavior_Demo_imaging$BOBs=="BOB"], BCP_Behavior_Demo_imaging$ibq_r.duration_of_orienting[BCP_Behavior_Demo_imaging$Candidate_Age<9.5]) #Just for visits <9.5mo (i.e. match BOBs)
+```
+
+
