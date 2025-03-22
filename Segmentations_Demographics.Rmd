@@ -34,10 +34,11 @@ BCP_demographics = merge(BCP_demographics_visit, BCP_demographics_eligibility, b
 #Add in segmentation IDs
 Segmentation_IDs = Segmentation_IDs %>%
   mutate(BOBs = "BOB") #Label those in the repository
-BCP_demographics_SegID <- merge(Segmentation_IDs, BCP_demographics, by.x = c("SUBID", "Age"), by.y = c("demographics.CandID", "Visit_Age"), all=T)
+BCP_demographics_SegID <- merge(Segmentation_IDs, BCP_demographics, by.x = c("SUBID", "Visit_Age"), by.y = c("demographics.CandID", "Visit_Age"), all=T)
 
 #Remove irrelevant visits (ex. parent visits)
 BCP_demographics_SegID = BCP_demographics_SegID %>%
+  mutate(Age=Visit_Age) %>%
   mutate(Age = ifelse(Age==".", 0.5, Age)) %>%
   filter(as.numeric(Age) > 0)
 
@@ -70,6 +71,15 @@ BCP_Behavior_Demo_imaging = BCP_Behavior_Demo_imaging %>%
 
 #Remove all files except relevant
 rm(list=setdiff(ls(), c("BCP_Behavior_Demo_imaging")))
+
+table(BCP_Behavior_Demo_imaging$demographics_eligibility.subject_race)
+#Rename race categories
+BCP_Behavior_Demo_imaging = BCP_Behavior_Demo_imaging %>%
+  mutate(Race_rename = case_when(
+    demographics_eligibility.subject_race=="asian" ~ "Asian",
+    demographics_eligibility.subject_race=="black" ~ "Black",
+    demographics_eligibility.subject_race=="mixed" ~ "Multiracial",
+    demographics_eligibility.subject_race=="white" ~ "White"))
 ```
 
 ```{r}
@@ -111,7 +121,7 @@ sex_donut_full = donut_plot_full(demographics.Sex)
 p1_donut_full = donut_plot_full(demographics_eligibility.parent1_education)
 p2_donut_full = donut_plot_full(demographics_eligibility.parent2_education)
 inc_donut_full = donut_plot_full(demographics_eligibility.household_income)
-race_donut_full = donut_plot_full(demographics_eligibility.subject_race)
+race_donut_full = donut_plot_full(Race_rename)
 
 Age_continuous_full = ggplot(BCP_Behavior_Demo_imaging, aes(Candidate_Age, reorder(SUBID, Candidate_Age, min), group=SUBID))+
   geom_line(color="gray") + 
@@ -206,7 +216,7 @@ sex_donut_BOB = donut_plot_BOB(demographics.Sex)
 p1_donut_BOB = donut_plot_BOB(demographics_eligibility.parent1_education)
 p2_donut_BOB = donut_plot_BOB(demographics_eligibility.parent2_education)
 inc_donut_BOB = donut_plot_BOB(demographics_eligibility.household_income)
-race_donut_BOB = donut_plot_BOB(demographics_eligibility.subject_race)
+race_donut_BOB = donut_plot_BOB(Race_rename)
 
 Age_continuous_BOB = BCP_Behavior_Demo_imaging %>%
   filter(BOBs=="BOB") %>%
@@ -264,7 +274,10 @@ Ed_Income_BOB = ggarrange(NULL, p1_plot_BOB, income_plot_BOB, ncol=1, heights = 
 Age_bin_BOB_NULL = ggarrange(NULL, Age_bins_BOB, ncol=1, heights=c(0.1, 1))
 
 Left_BOB = ggarrange(ggarrange(Age_continuous_BOB, Age_bin_BOB_NULL, ncol=2), Sex_Race_BOB, ncol=1, heights = c(1.1, 1))
-ggarrange(Left_BOB, NULL, Ed_Income_BOB, ncol=3, widths=c(3, 0.1, 1.75))
+Paper_figure = ggarrange(Left_BOB, NULL, Ed_Income_BOB, ncol=3, widths=c(3, 0.1, 1.75))
+Paper_figure
+
+ggsave(plot=Paper_figure, filename="Figure2.jpeg", width = 7, height = 5)
 ```
 
 ```{r}
@@ -332,6 +345,11 @@ BCP_Behavior_Demo_imaging %>%
 t.test(BCP_Behavior_Demo_imaging$mullen.composite_standard_score[BCP_Behavior_Demo_imaging$BOBs=="BOB"], BCP_Behavior_Demo_imaging$mullen.composite_standard_score) #For all visits across ages.
 t.test(BCP_Behavior_Demo_imaging$mullen.composite_standard_score[BCP_Behavior_Demo_imaging$BOBs=="BOB"], BCP_Behavior_Demo_imaging$mullen.composite_standard_score[BCP_Behavior_Demo_imaging$Candidate_Age<9.5]) #Just for visits <9.5mo (i.e. match BOBs)
 
+BCP_Behavior_Demo_imaging %>%
+  filter(BOBs!="BOB" & !is.na(mullen.composite_standard_score))
+BCP_Behavior_Demo_imaging %>%
+  filter(Candidate_Age<9.5 & BOBs!="BOB" & !is.na(mullen.composite_standard_score))
+
 #Vineland
 BCP_Behavior_Demo_imaging %>%
   filter(BOBs=="BOB") %>%
@@ -340,6 +358,9 @@ BCP_Behavior_Demo_imaging %>%
   filter(Candidate_Age<9.5) %>%
   summarise(mean=mean(vineland_subject.ABC_STD_SCORE, na.rm = T), sd=sd(vineland_subject.ABC_STD_SCORE, na.rm = T))
 t.test(BCP_Behavior_Demo_imaging$vineland_subject.ABC_STD_SCORE[BCP_Behavior_Demo_imaging$BOBs=="BOB"], BCP_Behavior_Demo_imaging$vineland_subject.ABC_STD_SCORE[BCP_Behavior_Demo_imaging$Candidate_Age<9.5]) #Just for visits <9.5mo (i.e. match BOBs)
+
+BCP_Behavior_Demo_imaging %>%
+  filter(Candidate_Age<9.5 & BOBs!="BOB" & !is.na(vineland_subject.ABC_STD_SCORE))
 
 #IBQ_R - chose these three based on Sooyeon's work: "most representative (based on factor loadings) and psychometrically sound subscales of the three higher-order factors". She suggested this: "I would recommend either smiling/laughter and/or vocal reactivity in Positive Emotionality factor, fear and/or distress to limitation from Negative Emotionality factor, and low intensity pleasure and/or duration of orienting in Regulatory Capacity factor."
 BCP_Behavior_Demo_imaging %>%
@@ -365,6 +386,14 @@ BCP_Behavior_Demo_imaging %>%
   filter(Candidate_Age<9.5) %>%
   summarise(mean=mean(ibq_r.duration_of_orienting, na.rm = T), sd=sd(ibq_r.duration_of_orienting, na.rm = T))
 t.test(BCP_Behavior_Demo_imaging$ibq_r.duration_of_orienting[BCP_Behavior_Demo_imaging$BOBs=="BOB"], BCP_Behavior_Demo_imaging$ibq_r.duration_of_orienting[BCP_Behavior_Demo_imaging$Candidate_Age<9.5]) #Just for visits <9.5mo (i.e. match BOBs)
+
+BCP_Behavior_Demo_imaging %>%
+  filter(Candidate_Age<9.5 & BOBs!="BOB" & !is.na(ibq_r.smiling_and_laughter))
+BCP_Behavior_Demo_imaging %>%
+  filter(Candidate_Age<9.5 & BOBs!="BOB" & !is.na(ibq_r.fear))
+BCP_Behavior_Demo_imaging %>%
+  filter(Candidate_Age<9.5 & BOBs!="BOB" & !is.na(ibq_r.duration_of_orienting))
+
 ```
 
 

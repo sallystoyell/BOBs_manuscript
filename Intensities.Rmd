@@ -56,15 +56,19 @@ Intensities = Intensities_long %>%
 
 ```{r}
 #By tissue/image type
-Intensities %>%
+Intensity = Intensities %>%
 ggplot(., aes(Age, cohen_graywhite)) + 
   geom_hline(yintercept = 0, linetype = "dashed") + 
   geom_boxplot(aes(fill=image)) +
   scale_fill_manual(values=c("#CCEBC5", "lightblue")) + 
   ylim(-2.1, 2.1) + 
   labs(y="Gray/White Matter - Cohen's D", fill="Image") + 
-  theme_classic(base_size=20)
+  ggtitle("Intensity histogram changes") + 
+  theme_classic(base_size=20) + 
+  theme(plot.title = element_text(size=25, face = "bold", hjust = 0.7, margin=margin(0,0,30,0)))
+Intensity
 
+ggsave(plot=Intensity, filename="Figure_intensity.jpeg", width = 9)
 ```
 
 ```{r}
